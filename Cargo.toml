@@ -1,0 +1,39 @@
+[package]
+name = "hikea"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ansi-to-html = { version = "0.2.1", features = ["lazy-init"] }
+arc-swap = "1.6.0"
+axum = { version = "0.7.7", features = ["multipart"] }
+axum-extra = { version = "0.9.4", features = ["cookie"] }
+base64 = "0.22.1"
+color-eyre = { path = "../eyre/color-eyre", features = ["tracing-error"] }
+ed25519-dalek = "2.1.0"
+emath = "0.29.1"
+geo = "0.29.1"
+gpx = "0.10.0"
+hex = { version = "0.4.3", features = ["serde"] }
+jsonwebtoken = "9.3.0"
+magick_rust = "1.0.0"
+maud = { version = "0.26.0", features = ["axum"] }
+oauth2 = "4.4.2"
+reqwest = { version = "0.12.9", default-features = false, features = ["charset", "rustls-tls", "http2", "gzip", "brotli", "json"] }
+ring = "0.17.7"
+serde = { version = "1.0.195", features = ["derive"] }
+serde_json = "1.0.111"
+serenity = { version = "0.12.2", features = ["model", "rustls_backend"], default-features = false }
+tokio = { version = "1.35.1", features = ["rt-multi-thread", "macros", "signal"] }
+toml = "0.8.19"
+tower-http = { version = "0.6.1", features = ["trace"] }
+tracing = "0.1.40"
+tracing-error = "0.2.0"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+uom = "0.36.0"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
+
