@@ -7,7 +7,7 @@ use std::{
 use arc_swap::ArcSwap;
 use axum::{
     extract::State,
-    http::{HeaderMap, HeaderValue, StatusCode},
+    http::{HeaderMap, StatusCode},
     routing::{get, post},
     Json, Router,
 };
@@ -233,9 +233,6 @@ async fn discord_interaction(
     )
     .wrap_err("`X-Signature-Ed25519` was not valid hex")
     .with_status_code(StatusCode::BAD_REQUEST)?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static("application/json"));
 
     let signature = Signature::from_bytes(&signature);
     config
