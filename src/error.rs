@@ -16,7 +16,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect},
     Json,
 };
-use color_eyre::eyre::eyre;
+use color_eyre::eyre::{eyre, Context};
 use reqwest::Response;
 use serenity::all::{
     Color, CreateEmbed, CreateInteractionResponse, CreateInteractionResponseMessage,
@@ -158,14 +158,15 @@ impl<T> WithStatusCode<T> for std::result::Result<T, color_eyre::eyre::Report> {
 }
 
 pub trait PropogateRequest {
-    fn propogate_request_if_err(self) -> Result<Response, HtmlError>;
+    fn propogate_request_if_err(self, wrap: &'static str) -> Result<Response, HtmlError>;
 }
 
 impl PropogateRequest for Response {
-    fn propogate_request_if_err(self) -> Result<Response, HtmlError> {
+    fn propogate_request_if_err(self, wrap: &'static str) -> Result<Response, HtmlError> {
         let status = self.status();
         if status.is_server_error() || status.is_client_error() {
             return Err(eyre!("Reqwest request encountered an issue: {:?}", status))
+                .wrap_err(wrap)
                 .with_status_code_html(status);
         }
         Ok(self)

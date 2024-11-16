@@ -12,7 +12,7 @@ use axum::{
 use color_eyre::eyre::{self, eyre, Context, OptionExt};
 use gpx::Gpx;
 use maud::DOCTYPE;
-use serenity::all::{ChannelId, EditMessage, MessageId};
+use serenity::all::{ChannelId, Color, CreateEmbed, EditMessage, MessageId};
 use tracing::instrument;
 
 use crate::{error::WithStatusCode, AppState};
@@ -232,6 +232,10 @@ pub async fn post(
     .wrap_err("Failed to create Discord embed from GPX file")
     .with_status_code_html(StatusCode::INTERNAL_SERVER_ERROR)?;
 
+    let react_embed = CreateEmbed::new()
+        .color(Color::DARK_GREEN)
+        .title("React with ⛰️ if interested");
+
     let http = state.http.load();
     http.get_message(channel_id, message_id)
         .await
@@ -239,7 +243,9 @@ pub async fn post(
         .with_status_code_html(StatusCode::INTERNAL_SERVER_ERROR)?
         .edit(
             http.deref(),
-            EditMessage::new().embed(embed).components(Vec::new()),
+            EditMessage::new()
+                .embeds(vec![embed, react_embed])
+                .components(Vec::new()),
         )
         .await
         .wrap_err("Failed to update embed for trail suggestion on Discord")

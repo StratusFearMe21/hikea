@@ -230,7 +230,7 @@ pub async fn redirect_oauth2(
         .await
         .wrap_err_with(|| format!("Failed to obtain user from guild `{}`", config.guild_id))
         .with_status_code_html(StatusCode::INTERNAL_SERVER_ERROR)?
-        .propogate_request_if_err()?
+        .propogate_request_if_err("Failed to obtain user from guild")?
         .json()
         .await
         .wrap_err_with(|| {

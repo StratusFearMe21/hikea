@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     net::SocketAddr,
     ops::Deref,
     sync::{atomic::AtomicU64, Arc},
@@ -12,14 +13,13 @@ use axum::{
     Json, Router,
 };
 use color_eyre::eyre::{self, eyre, Context, OptionExt};
-use ed25519_dalek::{Signature, Verifier, VerifyingKey, SIGNATURE_LENGTH};
 use error::WithStatusCode;
 use oauth2::{ClientId, ClientSecret, RedirectUrl};
-use serde::{de::Error, Deserialize};
+use serde::{de::Error, Deserialize, Serialize};
 use serenity::{
     all::{
         CreateInteractionResponse, CreateInteractionResponseFollowup,
-        CreateInteractionResponseMessage,
+        CreateInteractionResponseMessage, Verifier,
     },
     http::{Http, HttpBuilder},
     model::{application::*, id::*},
@@ -35,16 +35,16 @@ mod error;
 mod web_interface;
 
 mod ed25519_serde {
-    use ed25519_dalek::{VerifyingKey, PUBLIC_KEY_LENGTH};
     use serde::de::Error;
     use serde::Deserializer;
+    use serenity::all::Verifier;
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<VerifyingKey, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Verifier, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let bytes: [u8; PUBLIC_KEY_LENGTH] = hex::serde::deserialize(deserializer)?;
-        VerifyingKey::from_bytes(&bytes).map_err(|e| D::Error::custom(e))
+        let bytes: [u8; 32] = hex::serde::deserialize(deserializer)?;
+        Verifier::try_new(bytes).map_err(|e| D::Error::custom(e))
     }
 }
 
@@ -86,7 +86,7 @@ mod uom_units {
 struct Config {
     address: SocketAddr,
     #[serde(with = "ed25519_serde")]
-    public_key: VerifyingKey,
+    public_key: Verifier,
     token: String,
     application_id: ApplicationId,
     guild_id: GuildId,
@@ -171,6 +171,8 @@ async fn main() -> eyre::Result<()> {
             commands::ping::create_command(),
             commands::suggest::create_command(),
             commands::inject::create_command(),
+            commands::listenbrainz::create_command(),
+            commands::convert_link::create_command(),
         ],
     )
     .await
@@ -205,6 +207,11 @@ async fn main() -> eyre::Result<()> {
         .wrap_err("Axum server failure")
 }
 
+#[derive(Deserialize, Serialize)]
+pub enum ComponentId<'a> {
+    Listenbrainz { time: u64, user: Cow<'a, str> },
+}
+
 #[instrument(skip_all)]
 async fn discord_interaction(
     headers: HeaderMap,
@@ -212,33 +219,25 @@ async fn discord_interaction(
     body: String,
 ) -> Result<Json<CreateInteractionResponse>, error::DiscordError> {
     let config = state.config.load();
-    let mut sig_body = headers
+    let timestamp = headers
         .get("X-Signature-Timestamp")
         .ok_or_eyre("Failed to find `X-Signature-Timestamp` in headers")
         .with_status_code(StatusCode::BAD_REQUEST)?
         .to_str()
         .wrap_err("`X-Signature-Timestamp` was not valid UTF-8")
+        .with_status_code(StatusCode::BAD_REQUEST)?;
+    let signature = headers
+        .get("X-Signature-Ed25519")
+        .ok_or_eyre("Failed to find `X-Signature-Ed25519` in headers")
         .with_status_code(StatusCode::BAD_REQUEST)?
-        .to_owned();
+        .to_str()
+        .wrap_err("`X-Signature-Ed25519` was not valid UTF-8")
+        .with_status_code(StatusCode::BAD_REQUEST)?;
 
-    sig_body.push_str(&body);
-    let mut signature: [u8; SIGNATURE_LENGTH] = [0; SIGNATURE_LENGTH];
-    hex::decode_to_slice(
-        headers
-            .get("X-Signature-Ed25519")
-            .ok_or_eyre("Failed to find `X-Signature-Ed25519` in headers")
-            .with_status_code(StatusCode::BAD_REQUEST)?
-            .as_bytes(),
-        &mut signature,
-    )
-    .wrap_err("`X-Signature-Ed25519` was not valid hex")
-    .with_status_code(StatusCode::BAD_REQUEST)?;
-
-    let signature = Signature::from_bytes(&signature);
     config
         .public_key
-        .verify(sig_body.as_bytes(), &signature)
-        .wrap_err("Failed to verify public key with Discord")
+        .verify(signature, timestamp, body.as_bytes())
+        .map_err(|_| eyre!("Failed to verify public key with Discord"))
         .with_status_code(StatusCode::UNAUTHORIZED)?;
 
     let interaction_body: Interaction = serde_json::from_str(&body)
@@ -256,11 +255,35 @@ async fn discord_interaction(
                         .wrap_err("Failed to initialize `suggest` command")
                         .interaction_response()?;
 
+                let author = command
+                    .member
+                    .as_ref()
+                    .ok_or_eyre("Command was executed outside of a guild")
+                    .interaction_response()?
+                    .display_name()
+                    .to_owned();
+
+                Ok(Json(CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new().add_embed(
+                        suggestion_command
+                            .respond(&command, Arc::clone(&state), author)
+                            .await
+                            .wrap_err("Failed to respond to `suggest` command")
+                            .interaction_response()?,
+                    ),
+                )))
+            }
+            "listenbrainz" => {
+                let options = command.data.options();
+                let listenbrainz_command =
+                    commands::listenbrainz::ListenbrainzCommand::from_options(&options)
+                        .wrap_err("Failed to initialize `listenbrainz` command")
+                        .interaction_response()?;
+
                 Ok(Json(
-                    suggestion_command
-                        .respond(&command, Arc::clone(&state))
-                        .await
-                        .wrap_err("Failed to respond to `suggest` command")
+                    listenbrainz_command
+                        .respond()
+                        .wrap_err("Failed to respond to `listenbrainz` command")
                         .interaction_response()?,
                 ))
             }
@@ -293,13 +316,38 @@ async fn discord_interaction(
                     CreateInteractionResponseMessage::new().ephemeral(true),
                 )))
             }
+            "Convert to hiking suggestion" => {
+                let state = Arc::clone(&state);
+
+                let response = commands::convert_link::respond(&command, Arc::clone(&state))
+                    .await
+                    .wrap_err("Failed to respond to `inject_hike` command")
+                    .interaction_response()?;
+
+                Ok(Json(CreateInteractionResponse::UpdateMessage(response)))
+            }
             name => {
                 return Err(eyre!("Command `{:?}` not implemented", name)).interaction_response()?
             }
         },
+        Interaction::Component(component_interaction) => {
+            match serde_json::from_str(&component_interaction.data.custom_id)
+                .wrap_err("Failed to deserialize interaction custom_id")
+                .interaction_response()?
+            {
+                ComponentId::Listenbrainz { time, user } => {
+                    Ok(Json(CreateInteractionResponse::UpdateMessage(
+                        commands::listenbrainz::update_message(time, &user)
+                            .await
+                            .wrap_err("Failed to update listenbrainz message")
+                            .interaction_response()?,
+                    )))
+                }
+            }
+        }
         i => {
             return Err(eyre!("Interaction type `{:?}` not implemented", i.kind()))
-                .with_status_code(StatusCode::INTERNAL_SERVER_ERROR)
+                .interaction_response()?
         }
     }
 }

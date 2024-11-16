@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::{borrow::Cow, ops::Deref, sync::Arc};
 
 use color_eyre::eyre::{self, eyre, Context, OptionExt};
 use geo::{Contains, Distance, Haversine, Length, Line, Point};
@@ -7,7 +7,7 @@ use serenity::{
         Color, CommandInteraction, CommandOptionType, CreateButton, CreateCommandOption,
         CreateEmbed, CreateEmbedAuthor, EditMessage, ResolvedOption, ResolvedValue,
     },
-    builder::{CreateCommand, CreateInteractionResponse, CreateInteractionResponseMessage},
+    builder::CreateCommand,
 };
 use tracing::instrument;
 use uom::{
@@ -44,7 +44,7 @@ struct ElevationPoint {
 
 #[derive(Debug)]
 pub struct SuggestionCommand<'a> {
-    suggestion_link: &'a str,
+    pub suggestion_link: Cow<'a, str>,
 }
 
 impl<'a> SuggestionCommand<'a> {
@@ -54,22 +54,20 @@ impl<'a> SuggestionCommand<'a> {
             ResolvedOption {
                 value: ResolvedValue::String(suggestion_link),
                 ..
-            } => Ok(SuggestionCommand { suggestion_link }),
+            } => Ok(SuggestionCommand {
+                suggestion_link: Cow::Borrowed(suggestion_link),
+            }),
             _ => Err(eyre!("Option passed was not the right type")),
         }
     }
 
     #[instrument(skip(command, state))]
     pub async fn respond(
-        self,
+        mut self,
         command: &CommandInteraction,
         state: Arc<AppState>,
-    ) -> Result<CreateInteractionResponse, eyre::Report> {
-        let member = command
-            .member
-            .as_ref()
-            .ok_or_eyre("Command author was not a member of the guild it was executed in")?;
-
+        author: String,
+    ) -> Result<CreateEmbed, eyre::Report> {
         if !self
             .suggestion_link
             .starts_with("https://www.alltrails.com")
@@ -77,6 +75,16 @@ impl<'a> SuggestionCommand<'a> {
             return Err(eyre!(
                 "Trail suggestion was not from <https://www.alltrails.com>"
             ));
+        }
+
+        if self
+            .suggestion_link
+            .starts_with("https://www.alltrails.com/explore/")
+        {
+            self.suggestion_link = Cow::Owned(format!(
+                "https://www.alltrails.com/{}",
+                &self.suggestion_link["https://www.alltrails.com/explore/".len()..]
+            ))
         }
 
         if !self
@@ -108,26 +116,16 @@ impl<'a> SuggestionCommand<'a> {
                 .unwrap();
         });
 
-        Ok(CreateInteractionResponse::Message(
-            CreateInteractionResponseMessage::new().add_embed(
-                CreateEmbed::new()
-                    .color(Color::DARK_GREEN)
-                    .title("Trail suggestion!")
-                    .author({
-                        let mut author = CreateEmbedAuthor::new(member.display_name());
-                        if let Some(url) = member.avatar_url() {
-                            author = author.icon_url(url);
-                        }
-                        author
-                    })
-                    .description(
-                        "Someone suggested a trail! \
+        Ok(CreateEmbed::new()
+            .color(Color::DARK_GREEN)
+            .title("Trail suggestion!")
+            .author(CreateEmbedAuthor::new(author))
+            .description(
+                "Someone suggested a trail! \
                         An admin will take your suggestion and \
                         fill it in with trail information shortly",
-                    )
-                    .url(self.suggestion_link),
-            ),
-        ))
+            )
+            .url(self.suggestion_link))
     }
 }
 
